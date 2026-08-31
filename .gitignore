@@ -5,3 +5,10 @@ __pycache__/
 venv/
 *.egg-info/
 .DS_Store
+.claude/settings.local.json
+.pytest_cache/
+
+# Run artefacts. The audit trail is append-only and grows with every run, so it
+# is generated locally rather than versioned — `--verify-audit` checks the copy
+# on your machine.
+data/audit_log.jsonl

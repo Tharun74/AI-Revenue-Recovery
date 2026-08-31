@@ -5,8 +5,8 @@ pydantic-settings>=2.4
 razorpay>=1.4
 python-dotenv>=1.0
 
-# diagnose stage (Day 3)
-anthropic>=0.40
+# diagnose stage — optional at runtime, the agent degrades to rules without a key
+requests>=2.31
 
 # testing
 pytest>=8.0

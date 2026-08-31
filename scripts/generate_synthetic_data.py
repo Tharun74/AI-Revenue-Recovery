@@ -173,6 +173,48 @@ DIRTY_ROW_BUILDERS = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Policy edge rows
+#
+# These rows are *clean*. They exist to guarantee that specific decide-stage
+# rules have something to bite on, instead of relying on the RNG happening to
+# produce a case in the right state.
+#
+# The cooldown row is the one that matters. Timestamps in this file are absolute
+# and anchored to generation time, so as the CSV ages every `last_attempt_at`
+# drifts out of the cooldown window and STOP_COOLDOWN_NOT_ELAPSED quietly stops
+# firing — the rule looks dead when it is only unexercised. Pinning one row an
+# hour before generation time means a freshly generated batch always demonstrates
+# it. (Regenerate the batch before a demo; the seed fixes the batch's shape, not
+# its absolute dates.)
+# --------------------------------------------------------------------------
+
+def _edge_inside_cooldown(rng, now, clean):
+    row = gen_clean_record(rng, 910, now)
+    row["failure_reason"] = "bank_timeout"
+    row["error_description"] = "Bank server did not respond within timeout window"
+    row["created_at"] = (now - timedelta(hours=9)).isoformat()
+    row["retry_count"] = 1
+    row["last_attempt_at"] = (now - timedelta(hours=1)).isoformat()
+    return row, "ACCEPTED then HELD — inside the cooldown window, so this run must not touch it"
+
+
+def _edge_at_retry_cap(rng, now, clean):
+    row = gen_clean_record(rng, 911, now)
+    row["failure_reason"] = "gateway_error"
+    row["error_description"] = "Payment gateway returned a temporary processing error"
+    row["created_at"] = (now - timedelta(hours=72)).isoformat()
+    row["retry_count"] = 3
+    row["last_attempt_at"] = (now - timedelta(hours=30)).isoformat()
+    return row, "ACCEPTED then ESCALATED — retry cap spent, so a human takes it, not another SMS"
+
+
+EDGE_ROW_BUILDERS = [
+    _edge_inside_cooldown,
+    _edge_at_retry_cap,
+]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--count", type=int, default=80, help="clean records to generate")
@@ -183,10 +225,17 @@ def main() -> None:
         help=f"dirty records to inject (0-{len(DIRTY_ROW_BUILDERS)})",
     )
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for reproducibility")
+    parser.add_argument(
+        "--edge",
+        type=int,
+        default=len(EDGE_ROW_BUILDERS),
+        help=f"policy edge records to inject (0-{len(EDGE_ROW_BUILDERS)})",
+    )
     parser.add_argument("--out", type=Path, default=None, help="output CSV path")
     args = parser.parse_args()
 
     n_dirty = max(0, min(args.dirty, len(DIRTY_ROW_BUILDERS)))
+    n_edge = max(0, min(args.edge, len(EDGE_ROW_BUILDERS)))
     rng = random.Random(args.seed)
 
     # Fixed reference time so a given seed yields identical relative timestamps.
@@ -202,7 +251,14 @@ def main() -> None:
         dirty_rows.append(row)
         notes.append(note)
 
-    records = clean + dirty_rows
+    edge_rows: list[dict] = []
+    edge_notes: list[str] = []
+    for builder in EDGE_ROW_BUILDERS[:n_edge]:
+        row, note = builder(rng, now, clean)
+        edge_rows.append(row)
+        edge_notes.append(note)
+
+    records = clean + dirty_rows + edge_rows
     rng.shuffle(records)
 
     out_path = args.out or (Path(__file__).resolve().parent.parent / "data" / "failed_payments.csv")
@@ -221,6 +277,9 @@ def main() -> None:
     print(f"    unrecoverable:   {unrecoverable}   <- stopping logic must catch every one")
     print(f"  dirty rows:        {len(dirty_rows)}")
     for note in notes:
+        print(f"    - {note}")
+    print(f"  policy edge rows:  {len(edge_rows)}")
+    for note in edge_notes:
         print(f"    - {note}")
 
 
